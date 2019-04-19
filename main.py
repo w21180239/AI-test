@@ -1,23 +1,37 @@
-import time
-import copy
-import matplotlib.pyplot as plt
-import numpy as np
 import os
-import pandas as pd
+import time
 import warnings
+
+import lightgbm
+import numpy as np
+import pandas as pd
 from keras.utils import to_categorical
 from sklearn import preprocessing, metrics
-from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
-from xgboost import XGBClassifier, XGBRegressor
-from xgboost import plot_importance
+from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 ONLY_FLOAT = True
 FULL_DATA = True
-ONE_HOT = False
+ONE_HOT = True
+
+
+def process_class_fea(full_class_fea, class_fea):
+    cl_tran_list = [preprocessing.LabelEncoder() for i in range(len(class_fea[0]))]
+    tmp_class_fea = []
+    for i in range(len(cl_tran_list)):
+        cl_tran_list[i].fit(full_class_fea[:, i])
+    class_fea = class_fea[:, :10]
+    cl_tran_list = cl_tran_list[:10]
+    one = preprocessing.OneHotEncoder(n_values=[len(t.classes_) for t in cl_tran_list])
+    for i in range(len(cl_tran_list)):
+        tmp_class_fea.append(cl_tran_list[i].transform(class_fea[:, i]))
+    class_fea = np.array(tmp_class_fea).astype(np.float32).transpose((1, 0))
+    if ONE_HOT:
+        class_fea = one.fit_transform(class_fea)
+    return class_fea, cl_tran_list, one
 
 
 def load_data():
@@ -35,16 +49,9 @@ def load_data():
     full_class_fea = np.delete(full_class_fea, 24, 1)
     class_fea = np.delete(class_fea, 24, 1)
     float_fea = X[:, float_list].astype(np.float32)
-    cl_tran_list = [preprocessing.LabelEncoder() for i in range(len(class_fea[0]))]
-    tmp_class_fea = []
-    for i in range(len(cl_tran_list)):
-        cl_tran_list[i].fit(full_class_fea[:, i])
-    one = preprocessing.OneHotEncoder(n_values=[len(t.classes_) for t in cl_tran_list])
-    for i in range(len(cl_tran_list)):
-        tmp_class_fea.append(cl_tran_list[i].transform(class_fea[:, i]))
-    class_fea = np.array(tmp_class_fea).astype(np.float32).transpose((1, 0))
-    if ONE_HOT:
-        class_fea = one.fit_transform(class_fea)
+
+    class_fea, cl_tran_list, one = process_class_fea(full_class_fea, class_fea)
+
     imp = preprocessing.Imputer(missing_values='NaN', strategy='mean', axis=1)
     float_fea = imp.fit_transform(float_fea)
 
@@ -91,9 +98,11 @@ def Classify(x_train, x_test, y_train, y_test, ss, cl_tran_list, imp, scale, one
                   'min_child_weight': [200, 300, 400], 'max_depth': [4, 5, 6, 7], 'gamma': [0.1],
                   'reg_lambda': [4], 'scale_pos_weight': [scale], 'tree_method': ['gpu_hist'],
                   'predictor': ['gpu_predictor']}
+
     classifier = XGBClassifier(n_estimators=400, learning_rate=0.5, min_child_weight=300, max_depth=6, gamma=0.1,
-                              reg_lambda=2,
-                              scale_pos_weight=scale, tree_method='gpu_hist', predictor='gpu_predictor')
+                               reg_lambda=2,
+                               scale_pos_weight=scale, tree_method='gpu_hist', predictor='gpu_predictor')
+    classifier = lightgbm.LGBMClassifier(n_estimators=400, scale_pos_weight=scale, reg_lambda=2)
     # grid_classifier = GridSearchCV(n_jobs=4, param_grid=parameters, estimator=classifier, scoring='auc', verbose=1)
     grid_classifier = classifier
     # grid_classifier.fit(x_train, y_train)
@@ -110,7 +119,7 @@ def Classify(x_train, x_test, y_train, y_test, ss, cl_tran_list, imp, scale, one
     # fig, ax = plt.subplots(figsize=(10, 15))
     # plot_importance(classifier, height=0.5, max_num_features=64, ax=ax)
     # plt.show()
-    classifier_y_predit = grid_classifier.predict_proba(x_test)[:,1]
+    classifier_y_predit = grid_classifier.predict_proba(x_test)[:, 1]
     fpr, tpr, thresholds = metrics.roc_curve(y_test, classifier_y_predit)
     print('AUC of Classifier:%f' % metrics.auc(fpr, tpr))
     # print(classification_report(y_test, classifier_y_predit))
@@ -122,7 +131,7 @@ def Classify(x_train, x_test, y_train, y_test, ss, cl_tran_list, imp, scale, one
     float_list = [i for i in range(1, len(X[0])) if i not in class_list]
     class_fea = X[:, class_list].astype(np.str)
     class_fea = np.delete(class_fea, 24, 1)
-
+    class_fea = class_fea[:, :10]
     float_fea = X[:, float_list].astype(np.float32)
     tmp_class_fea = []
 
@@ -138,7 +147,7 @@ def Classify(x_train, x_test, y_train, y_test, ss, cl_tran_list, imp, scale, one
             class_fea = one.fit_transform(class_fea).astype(np.float32).toarray()
         feature = np.hstack((class_fea, float_fea))
     feature = ss.transform(feature)
-    y = grid_classifier.predict_proba(feature)[:,1]
+    y = grid_classifier.predict_proba(feature)[:, 1]
     print('Predication finished!')
     return y
 
